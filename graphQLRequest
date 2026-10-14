@@ -1,0 +1,108 @@
+export interface GraphQLErrorLocation {
+  line: number;
+  column: number;
+}
+
+export interface GraphQLErrorItem {
+  message: string;
+  locations?: GraphQLErrorLocation[];
+  path?: (string | number)[];
+  extensions?: Record<string, unknown>;
+}
+
+export interface GraphQLResponse<TData> {
+  data?: TData;
+  errors?: GraphQLErrorItem[];
+}
+
+export class CustomGraphQLError extends Error {
+  graphQLErrors: GraphQLErrorItem[];
+
+  constructor(message: string, graphQLErrors: GraphQLErrorItem[] = []) {
+    super(message);
+    this.name = 'CustomGraphQLError';
+    this.graphQLErrors = graphQLErrors;
+    Object.setPrototypeOf(this, CustomGraphQLError.prototype);
+  }
+}
+
+export interface GraphQLRequestOptions<TVariables extends Record<string, unknown> = Record<string, unknown>> {
+  query: string;
+  variables?: TVariables;
+  endpoint?: string;
+  headers?: Record<string, string>;
+  timeout?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Generic GraphQL Client utility
+ * @template TData - Expected shape of the `data` payload
+ * @template TVariables - Shape of query variables
+ */
+export async function graphqlRequest<
+  TData,
+  TVariables extends Record<string, unknown> = Record<string, unknown>
+>({
+  query,
+  variables,
+  endpoint = process.env.REACT_APP_GRAPHQL_ENDPOINT || '/graphql',
+  headers = {},
+  timeout = 10000,
+  signal,
+}: GraphQLRequestOptions<TVariables>): Promise<TData> {
+  const timeoutController = new AbortController();
+  const timer = setTimeout(() => timeoutController.abort(), timeout);
+
+  // Link caller-supplied signal to trigger timeoutController cancellation
+  if (signal) {
+    signal.addEventListener('abort', () => timeoutController.abort());
+  }
+
+  const token = localStorage.getItem('authToken');
+
+  const mergedHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...headers,
+  };
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: mergedHeaders,
+      body: JSON.stringify({ query, variables }),
+      signal: timeoutController.signal,
+    });
+
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      throw new Error(`HTTP Error ${response.status}: ${response.statusText}`);
+    }
+
+    const result: GraphQLResponse<TData> = await response.json();
+
+    if (result.errors && result.errors.length > 0) {
+      const errorMessages = result.errors.map((e) => e.message).join(' | ');
+      throw new CustomGraphQLError(`GraphQL Error: ${errorMessages}`, result.errors);
+    }
+
+    if (!result.data) {
+      throw new Error('GraphQL response returned empty data without errors.');
+    }
+
+    return result.data;
+  } catch (error: unknown) {
+    clearTimeout(timer);
+
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      if (signal?.aborted) {
+        throw new Error('Request aborted by caller');
+      }
+      throw new Error(`Request timed out after ${timeout}ms`);
+    }
+
+    throw error;
+  }
+}
