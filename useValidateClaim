@@ -1,0 +1,78 @@
+import { useState, useEffect } from 'react';
+import { graphqlRequest } from './graphqlRequest';
+
+interface ValidateResponse {
+  claim: {
+    id: string;
+    isValid: boolean;
+    status: string;
+  };
+}
+
+interface ValidateVariables extends Record<string, unknown> {
+  claimNum: string;
+  prodType: string;
+}
+
+const VALIDATE_QUERY = `
+  query ValidateClaim($claimNum: String!, $prodType: String!) {
+    claim(claimNum: $claimNum, prodType: $prodType) {
+      id
+      isValid
+      status
+    }
+  }
+`;
+
+export function useValidateClaimAndProdType(claimNum?: string, prodType?: string) {
+  const [claimId, setClaimId] = useState<string | null>(null);
+  const [isValid, setIsValid] = useState<boolean>(false);
+  const [isValidating, setIsValidating] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // 1. Guard clause: Do not trigger if params are missing
+    if (!claimNum || !prodType) {
+      setClaimId(null);
+      setIsValid(false);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    const validate = async () => {
+      setIsValidating(true);
+      setError(null);
+
+      try {
+        const data = await graphqlRequest<ValidateResponse, ValidateVariables>({
+          query: VALIDATE_QUERY,
+          variables: { claimNum, prodType },
+          signal: controller.signal,
+        });
+
+        if (data.claim?.isValid) {
+          setClaimId(data.claim.id);
+          setIsValid(true);
+        } else {
+          setClaimId(null);
+          setIsValid(false);
+        }
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name !== 'AbortError') {
+          setError(err.message);
+          setClaimId(null);
+          setIsValid(false);
+        }
+      } finally {
+        setIsValidating(false);
+      }
+    };
+
+    validate();
+
+    return () => controller.abort();
+  }, [claimNum, prodType]); // Runs strictly when inputs change
+
+  return { claimId, isValid, isValidating, error };
+}
